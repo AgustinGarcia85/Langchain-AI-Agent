@@ -6,3 +6,5 @@ langchain-community
 langsmith
 python-dotenv
 watchdog
+daytona-sdk
+pytest
