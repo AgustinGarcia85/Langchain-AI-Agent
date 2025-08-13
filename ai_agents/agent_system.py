@@ -4,21 +4,19 @@ import os
 import shlex
 import subprocess
 import tempfile
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from langchain_openai import ChatOpenAI
 
 # LangChain (modern imports)
 try:
     from langchain_openai import ChatOpenAI
 except Exception:  # pragma: no cover - optional at runtime
     ChatOpenAI = None  # type: ignore
-
-try:
-    from langchain.memory import ConversationBufferMemory
-except Exception:  # pragma: no cover
-    ConversationBufferMemory = None  # type: ignore
 
 # Attempt to import Daytona SDK
 try:
@@ -35,10 +33,32 @@ DAYTONA_API_KEY = os.getenv("DAYTONA_API_KEY", "")
 DAYTONA_SERVER_URL = os.getenv("DAYTONA_SERVER_URL", "")
 
 
-def get_shared_memory() -> "ConversationBufferMemory":
-    if ConversationBufferMemory is None:
-        raise RuntimeError("langchain.memory.ConversationBufferMemory is required")
-    return ConversationBufferMemory(memory_key="history", return_messages=True)
+@dataclass
+class SimpleMemory:
+    """Simple conversation memory to replace deprecated ConversationBufferMemory"""
+    conversations: List[dict] = field(default_factory=list)
+    
+    def save_context(self, inputs: dict, outputs: dict) -> None:
+        """Save a conversation turn to memory"""
+        self.conversations.append({
+            "input": inputs.get("input", ""),
+            "output": outputs.get("output", "")
+        })
+    
+    def get_conversation_history(self) -> str:
+        """Get conversation history as a formatted string"""
+        history = []
+        for conv in self.conversations:
+            if conv["input"]:
+                history.append(f"Input: {conv['input']}")
+            if conv["output"]:
+                history.append(f"Output: {conv['output']}")
+        return "\n".join(history)
+
+
+def get_shared_memory() -> SimpleMemory:
+    """Get a shared memory instance"""
+    return SimpleMemory()
 
 
 @dataclass
@@ -102,14 +122,14 @@ class SandboxExecutor:
             )
 
 
-def _make_llm() -> Optional["ChatOpenAI"]:
+def _make_llm():
     if not OPENAI_API_KEY or ChatOpenAI is None:
         return None
     # Use a lightweight model if available
     return ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0)
 
 
-def _plan_with_llm(llm: "ChatOpenAI", task: str) -> str:
+def _plan_with_llm(llm, task: str) -> str:
     system = (
         "You are a planner that converts a user task into a minimal, safe list of bash commands.\n"
         "Rules:\n"
@@ -126,7 +146,7 @@ def _plan_with_llm(llm: "ChatOpenAI", task: str) -> str:
     return getattr(resp, "content", str(resp))
 
 
-def _review_with_llm(llm: "ChatOpenAI", output: ExecutionResult) -> str:
+def _review_with_llm(llm, output: ExecutionResult) -> str:
     system = (
         "You are a reviewer. Assess if the command output indicates success.\n"
         "Respond concisely with a 1-2 sentence verdict."
@@ -143,7 +163,7 @@ def _review_with_llm(llm: "ChatOpenAI", output: ExecutionResult) -> str:
 
 
 class PlannerAgent:
-    def __init__(self, memory: "ConversationBufferMemory", llm: Optional["ChatOpenAI"]) -> None:
+    def __init__(self, memory: SimpleMemory, llm):
         self.memory = memory
         self.llm = llm
 
@@ -160,7 +180,7 @@ class PlannerAgent:
 
 
 class ExecutorAgent:
-    def __init__(self, memory: "ConversationBufferMemory", executor: SandboxExecutor) -> None:
+    def __init__(self, memory: SimpleMemory, executor: SandboxExecutor) -> None:
         self.memory = memory
         self.executor = executor
 
@@ -181,7 +201,7 @@ class ExecutorAgent:
 
 
 class ReviewerAgent:
-    def __init__(self, memory: "ConversationBufferMemory", llm: Optional["ChatOpenAI"]) -> None:
+    def __init__(self, memory: SimpleMemory, llm):
         self.memory = memory
         self.llm = llm
 
@@ -199,7 +219,7 @@ class ReviewerAgent:
 
 
 class Orchestrator:
-    def __init__(self, memory: Optional["ConversationBufferMemory"] = None, llm: Optional["ChatOpenAI"] = None) -> None:
+    def __init__(self, memory=None, llm=None):
         self.memory = memory or get_shared_memory()
         self.llm = llm if llm is not None else _make_llm()
         self.executor = SandboxExecutor()
